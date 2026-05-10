@@ -1,0 +1,4 @@
+DATABASE_URL=postgresql://neondb_owner:npg_1rRxKm7WpsdT@ep-broad-field-appiaf4a.c-7.us-east-1.aws.neon.tech/neondb?sslmode=require
+NODE_ENV=production
+JWT_SECRET=umoja2026superSecretJWT256bitKeyForProduction
+JWT_REFRESH_SECRET=umoja2026RefreshSuperSecretJWT256bitKeyProd

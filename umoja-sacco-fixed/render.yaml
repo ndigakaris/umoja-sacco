@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: umoja-sacco-api
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      # Set these in the Render dashboard:
+      # DATABASE_URL     — from Neon (copy the pooled connection string)
+      # JWT_SECRET       — random 64-char string
+      # JWT_REFRESH_SECRET — another random 64-char string
+      # FRONTEND_URL     — your Vercel URL, e.g. https://umoja-sacco.vercel.app
