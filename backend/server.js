@@ -16,17 +16,18 @@ const logger = require('./src/utils/logger');
 const errorHandler = require('./src/middleware/errorHandler');
 
 // Route imports
-const authRoutes = require('./src/routes/auth');
-const memberRoutes = require('./src/routes/members');
-const accountRoutes = require('./src/routes/accounts');
-const transactionRoutes = require('./src/routes/transactions');
-const loanRoutes = require('./src/routes/loans');
-const repaymentRoutes = require('./src/routes/repayments');
-const welfareRoutes = require('./src/routes/welfare');
-const penaltyRoutes = require('./src/routes/penalties');
-const reportRoutes = require('./src/routes/reports');
-const auditRoutes = require('./src/routes/audit');
-const dashboardRoutes = require('./src/routes/dashboard');
+const authRoutes         = require('./src/routes/auth');
+const memberRoutes       = require('./src/routes/members');
+const accountRoutes      = require('./src/routes/accounts');
+const transactionRoutes  = require('./src/routes/transactions');
+const loanRoutes         = require('./src/routes/loans');
+const repaymentRoutes    = require('./src/routes/repayments');
+const welfareRoutes      = require('./src/routes/welfare');
+const penaltyRoutes      = require('./src/routes/penalties');
+const settingsRoutes     = require('./src/routes/settings');
+const reportRoutes       = require('./src/routes/reports');
+const auditRoutes        = require('./src/routes/audit');
+const dashboardRoutes    = require('./src/routes/dashboard');
 const notificationRoutes = require('./src/routes/notifications');
 
 const app = express();
@@ -87,17 +88,18 @@ app.get('/health', (req, res) => {
 });
 
 // ─── API Routes ───────────────────────────────────────────────────────────
-app.use('/api/auth', authRoutes);
-app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/members', memberRoutes);
-app.use('/api/accounts', accountRoutes);
-app.use('/api/transactions', transactionRoutes);
-app.use('/api/loans', loanRoutes);
-app.use('/api/repayments', repaymentRoutes);
-app.use('/api/welfare', welfareRoutes);
-app.use('/api/penalties', penaltyRoutes);
-app.use('/api/reports', reportRoutes);
-app.use('/api/audit', auditRoutes);
+app.use('/api/auth',          authRoutes);
+app.use('/api/dashboard',     dashboardRoutes);
+app.use('/api/members',       memberRoutes);
+app.use('/api/accounts',      accountRoutes);
+app.use('/api/transactions',  transactionRoutes);
+app.use('/api/loans',         loanRoutes);
+app.use('/api/repayments',    repaymentRoutes);
+app.use('/api/welfare',       welfareRoutes);
+app.use('/api/penalties',     penaltyRoutes);
+app.use('/api/settings',      settingsRoutes);
+app.use('/api/reports',       reportRoutes);
+app.use('/api/audit',         auditRoutes);
 app.use('/api/notifications', notificationRoutes);
 
 // ─── 404 Handler ──────────────────────────────────────────────────────────
