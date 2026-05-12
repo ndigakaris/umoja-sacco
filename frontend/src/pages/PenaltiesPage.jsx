@@ -97,6 +97,7 @@ export default function PenaltiesPage() {
     period_date: `${currentYear}-${String(currentMonth).padStart(2,'0')}-01`,
     contribution_type:'savings',
     deadline_day: 5,
+    custom_amount: '',
   });
   const [editRules, setEditRules]   = useState([]);
   const [editSettings, setEditSettings] = useState({});
@@ -576,6 +577,27 @@ export default function PenaltiesPage() {
                   <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6B7280', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:5 }}>Deadline Day of Month</label>
                   <input type="number" min="1" max="28" value={autoForm.deadline_day} onChange={e => setAutoForm(f => ({...f, deadline_day:parseInt(e.target.value)}))} style={inp} />
                   <p style={{ fontSize:11, color:'#9CA3AF', marginTop:3 }}>Auto-generate only runs after this day. Currently set to: {settings.contribution_deadline_day}th</p>
+                </div>
+                <div style={{ borderTop:'1px solid #F3F4F6', paddingTop:12, marginTop:4 }}>
+                  <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6B7280', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:5 }}>
+                    Custom Penalty Amount (KES) <span style={{ fontSize:10, color:'#9CA3AF', fontWeight:400 }}>— optional override</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={autoForm.custom_amount}
+                    onChange={e => setAutoForm(f => ({...f, custom_amount: e.target.value}))}
+                    placeholder={rules.find(r=>r.type==='missed_contribution')
+                      ? rules.find(r=>r.type==='missed_contribution').is_percent
+                        ? 'Leave blank — uses ' + rules.find(r=>r.type==='missed_contribution').rate + '% rule'
+                        : 'Leave blank — uses KES ' + Number(rules.find(r=>r.type==='missed_contribution').rate).toLocaleString() + ' rule'
+                      : 'e.g. 200'}
+                    style={inp}
+                  />
+                  <p style={{ fontSize:11, color:'#9CA3AF', marginTop:3 }}>
+                    Override the rule amount for this batch only. Leave blank to use the configured penalty rule above.
+                  </p>
                 </div>
               </div>
 
