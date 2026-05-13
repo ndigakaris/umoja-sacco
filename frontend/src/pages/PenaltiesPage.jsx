@@ -360,7 +360,7 @@ export default function PenaltiesPage() {
                       </td>
                       <td style={{ padding:'11px 14px' }}>
                         {p.status === 'pending' && canManage && (
-                          <div style={{ display:'flex', gap:6' }}>
+                          <div style={{ display:'flex', gap:6 }}>
                             <button onClick={() => handlePay(p.id, p.reference)} disabled={busy} style={{ background:'#ECFDF5', color:'#065F46', border:'1px solid #A7F3D0', borderRadius:7, padding:'4px 10px', fontSize:11, fontWeight:700, cursor:'pointer' }}>
                               Pay
                             </button>
