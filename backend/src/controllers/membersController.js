@@ -1,26 +1,11 @@
 /**
  * Members Controller — CRUD, KYC, profile management
  *
- * BUGS FIXED:
- *  1. member_no generation: COUNT is NOT race-safe. Two concurrent requests
- *     both read COUNT=50 and both generate MBR-1051. Fixed with a
- *     SELECT ... FOR UPDATE on a dedicated sequence row, or (simpler &
- *     correct here) using MAX(member_no) with a transaction lock.
- *     We use a pg advisory lock keyed on a constant integer so only one
- *     INSERT path runs at a time — zero extra tables needed.
- *
- *  2. updateKyc: no validation of kyc_status value — any string could be
- *     written to the DB, bypassing the ENUM. Fixed with explicit allowlist.
- *
- *  3. updateMember: UPSERT profile row — if profile was never created for
- *     an older member, the UPDATE silently did nothing. Fixed with
- *     INSERT ... ON CONFLICT DO UPDATE.
- *
- *  4. createMember: temp password was included in the DB-returned object;
- *     now explicitly returned only in the API response, never stored in DB.
- *
- *  5. listMembers: pagination.pages used floating division — fixed to
- *     Math.ceil with parseInt to avoid "3.333" page counts.
+ * NEW FEATURES (002):
+ *  - member_no can now be provided by admin (custom) OR auto-generated
+ *  - nok_name is now mandatory (validated here and at DB level via app logic)
+ *  - Second next-of-kin fields: nok2_name, nok2_relationship, nok2_phone, nok2_id_number
+ *  - contribution_pct: 0–100 numeric field capped in DB by CHECK constraint
  */
 
 const { query, withTransaction } = require('../config/db');
@@ -29,12 +14,9 @@ const { createNotification } = require('../utils/notifications');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 
-// ─── Advisory lock key (arbitrary constant for member_no serialisation) ───
 const MEMBER_NO_LOCK_KEY = 7_001_001;
 
-/**
- * GET /api/members
- */
+// ─── listMembers ──────────────────────────────────────────────────────────
 exports.listMembers = async (req, res, next) => {
   try {
     const {
@@ -64,6 +46,7 @@ exports.listMembers = async (req, res, next) => {
       query(
         `SELECT u.id, u.member_no, u.full_name, u.email, u.role, u.status, u.created_at,
                 p.phone, p.id_number, p.kyc_status, p.photo_url,
+                p.contribution_pct,
                 COALESCE(a_sav.balance, 0) AS savings_balance,
                 COALESCE(a_sha.balance, 0) AS shares_balance,
                 COALESCE(a_wel.balance, 0) AS welfare_balance,
@@ -95,15 +78,13 @@ exports.listMembers = async (req, res, next) => {
         page:  parseInt(page, 10),
         limit: parseInt(limit, 10),
         total,
-        pages: Math.ceil(total / parseInt(limit, 10)), // FIX #5
+        pages: Math.ceil(total / parseInt(limit, 10)),
       },
     });
   } catch (err) { next(err); }
 };
 
-/**
- * GET /api/members/:id
- */
+// ─── getMember ────────────────────────────────────────────────────────────
 exports.getMember = async (req, res, next) => {
   try {
     const targetId = req.params.id === 'me' ? req.user.id : req.params.id;
@@ -118,7 +99,8 @@ exports.getMember = async (req, res, next) => {
               p.phone, p.id_number, p.date_of_birth, p.gender,
               p.occupation, p.employer, p.physical_address, p.photo_url,
               p.nok_name, p.nok_relationship, p.nok_phone, p.nok_id_number,
-              p.kyc_status, p.kyc_verified_at, p.kyc_verified_by,
+              p.nok2_name, p.nok2_relationship, p.nok2_phone, p.nok2_id_number,
+              p.contribution_pct, p.kyc_status, p.kyc_verified_at, p.kyc_verified_by,
               COALESCE(a_sav.balance, 0) AS savings_balance,
               COALESCE(a_sha.balance, 0) AS shares_balance,
               COALESCE(a_wel.balance, 0) AS welfare_balance,
@@ -144,28 +126,38 @@ exports.getMember = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/**
- * POST /api/members
- *
- * FIX #1: Uses pg_try_advisory_xact_lock to serialise member_no generation.
- * The lock is automatically released at transaction end — no cleanup needed.
- * This is correct even under concurrent requests from multiple Render workers
- * because advisory locks are connection-level (not server-process-level) and
- * Neon/pg pools each get a real pg connection.
- */
+// ─── createMember ─────────────────────────────────────────────────────────
 exports.createMember = async (req, res, next) => {
   try {
     const {
       full_name, email, phone, id_number,
-      role = 'member', nok_name, nok_relationship, nok_phone,
+      role = 'member',
+      // Primary NOK — mandatory
+      nok_name, nok_relationship, nok_phone, nok_id_number,
+      // Second NOK — optional
+      nok2_name, nok2_relationship, nok2_phone, nok2_id_number,
       date_of_birth, gender, occupation, physical_address,
+      contribution_pct = 100,
+      // Custom member number — if admin wants to override auto-gen
+      custom_member_no,
     } = req.body;
 
     if (!full_name || !email) {
       return res.status(400).json({ success: false, message: 'full_name and email are required' });
     }
 
-    // Check duplicates before entering the transaction
+    // NOK name is mandatory
+    if (!nok_name || !nok_name.trim()) {
+      return res.status(400).json({ success: false, message: 'Next of kin name (nok_name) is required' });
+    }
+
+    // Validate contribution_pct
+    const pct = parseFloat(contribution_pct);
+    if (isNaN(pct) || pct < 0 || pct > 100) {
+      return res.status(400).json({ success: false, message: 'contribution_pct must be between 0 and 100' });
+    }
+
+    // Check duplicates
     const { rows: existing } = await query(
       `SELECT u.email, p.phone, p.id_number
        FROM   users u
@@ -186,25 +178,35 @@ exports.createMember = async (req, res, next) => {
         return res.status(409).json({ success: false, message: 'ID number already registered' });
     }
 
+    // Validate custom member_no uniqueness if provided
+    if (custom_member_no) {
+      const { rows: existing_no } = await query(
+        'SELECT id FROM users WHERE member_no = $1', [custom_member_no]
+      );
+      if (existing_no.length > 0) {
+        return res.status(409).json({ success: false, message: `Member number ${custom_member_no} is already in use` });
+      }
+    }
+
     const tempPassword = `Umoja@${Math.random().toString(36).slice(2, 8)}`;
     const hash = await bcrypt.hash(tempPassword, 10);
 
     let createdMember;
 
     await withTransaction(async (client) => {
-      // FIX #1 — serialise member_no generation with an advisory lock.
-      // pg_try_advisory_xact_lock returns FALSE if another session holds it;
-      // we loop (or just wait with pg_advisory_xact_lock which blocks).
-      await client.query(`SELECT pg_advisory_xact_lock($1)`, [MEMBER_NO_LOCK_KEY]);
+      let memberNo = custom_member_no || null;
 
-      // Safe to read MAX now — no concurrent INSERT can race us
-      const { rows: [{ max_no }] } = await client.query(
-        `SELECT MAX(CAST(REGEXP_REPLACE(member_no, '[^0-9]', '', 'g') AS INT)) AS max_no
-         FROM   users
-         WHERE  member_no LIKE 'MBR-%'`
-      );
-      const nextSeq  = (max_no || 1000) + 1;
-      const memberNo = `MBR-${String(nextSeq).padStart(4, '0')}`;
+      if (!memberNo) {
+        // Serialise auto-gen with advisory lock
+        await client.query(`SELECT pg_advisory_xact_lock($1)`, [MEMBER_NO_LOCK_KEY]);
+        const { rows: [{ max_no }] } = await client.query(
+          `SELECT MAX(CAST(REGEXP_REPLACE(member_no, '[^0-9]', '', 'g') AS INT)) AS max_no
+           FROM   users
+           WHERE  member_no LIKE 'MBR-%'`
+        );
+        const nextSeq = (max_no || 1000) + 1;
+        memberNo = `MBR-${String(nextSeq).padStart(4, '0')}`;
+      }
 
       const { rows: [user] } = await client.query(
         `INSERT INTO users (id, member_no, full_name, email, password_hash, role, status)
@@ -215,18 +217,20 @@ exports.createMember = async (req, res, next) => {
 
       await client.query(
         `INSERT INTO profiles
-           (id, user_id, phone, id_number, nok_name, nok_relationship,
-            nok_phone, date_of_birth, gender, occupation, physical_address)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+           (id, user_id, phone, id_number,
+            nok_name, nok_relationship, nok_phone, nok_id_number,
+            nok2_name, nok2_relationship, nok2_phone, nok2_id_number,
+            date_of_birth, gender, occupation, physical_address, contribution_pct)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
         [
           uuidv4(), user.id, phone || null, id_number || null,
-          nok_name || null, nok_relationship || null, nok_phone || null,
+          nok_name.trim(), nok_relationship || null, nok_phone || null, nok_id_number || null,
+          nok2_name || null, nok2_relationship || null, nok2_phone || null, nok2_id_number || null,
           date_of_birth || null, gender || null,
-          occupation || null, physical_address || null,
+          occupation || null, physical_address || null, pct,
         ]
       );
 
-      // Create all 3 accounts atomically
       await client.query(
         `INSERT INTO accounts (id, user_id, type, balance) VALUES
          ($1, $2, 'savings', 0),
@@ -246,7 +250,7 @@ exports.createMember = async (req, res, next) => {
         ip: req.ip,
       });
 
-      createdMember = { ...user, temp_password: tempPassword }; // FIX #4: temp_password not from DB
+      createdMember = { ...user, temp_password: tempPassword };
     });
 
     res.status(201).json({
@@ -257,20 +261,40 @@ exports.createMember = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/**
- * PATCH /api/members/:id
- *
- * FIX #3: uses INSERT ... ON CONFLICT for profile upsert so older members
- * without a profiles row don't silently fail the UPDATE.
- */
+// ─── updateMember ─────────────────────────────────────────────────────────
 exports.updateMember = async (req, res, next) => {
   try {
     const {
       full_name, status, role, phone, id_number,
       occupation, employer, physical_address,
       date_of_birth, gender,
+      // First NOK
       nok_name, nok_relationship, nok_phone, nok_id_number,
+      // Second NOK
+      nok2_name, nok2_relationship, nok2_phone, nok2_id_number,
+      // Contribution pct
+      contribution_pct,
+      // Allow admin to change member_no
+      member_no,
     } = req.body;
+
+    // Validate pct if provided
+    if (contribution_pct !== undefined) {
+      const pct = parseFloat(contribution_pct);
+      if (isNaN(pct) || pct < 0 || pct > 100) {
+        return res.status(400).json({ success: false, message: 'contribution_pct must be between 0 and 100' });
+      }
+    }
+
+    // Validate member_no uniqueness if changing
+    if (member_no) {
+      const { rows } = await query(
+        'SELECT id FROM users WHERE member_no = $1 AND id != $2', [member_no, req.params.id]
+      );
+      if (rows.length > 0) {
+        return res.status(409).json({ success: false, message: `Member number ${member_no} is already in use` });
+      }
+    }
 
     await withTransaction(async (client) => {
       const { rows: [existing] } = await client.query(
@@ -278,42 +302,52 @@ exports.updateMember = async (req, res, next) => {
       );
       if (!existing) throw Object.assign(new Error('Member not found'), { statusCode: 404 });
 
-      if (full_name || status || role) {
+      if (full_name || status || role || member_no) {
         await client.query(
           `UPDATE users
            SET full_name  = COALESCE($1, full_name),
                status     = COALESCE($2, status),
                role       = COALESCE($3, role),
+               member_no  = COALESCE($4, member_no),
                updated_at = NOW()
-           WHERE id = $4`,
-          [full_name, status, role, req.params.id]
+           WHERE id = $5`,
+          [full_name, status, role, member_no || null, req.params.id]
         );
       }
 
-      // FIX #3: UPSERT profile — handles missing profile rows for legacy members
       await client.query(
         `INSERT INTO profiles
            (id, user_id, phone, id_number, occupation, employer, physical_address,
-            date_of_birth, gender, nok_name, nok_relationship, nok_phone, nok_id_number)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+            date_of_birth, gender,
+            nok_name, nok_relationship, nok_phone, nok_id_number,
+            nok2_name, nok2_relationship, nok2_phone, nok2_id_number,
+            contribution_pct)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
          ON CONFLICT (user_id) DO UPDATE SET
-           phone            = COALESCE($3,  profiles.phone),
-           id_number        = COALESCE($4,  profiles.id_number),
-           occupation       = COALESCE($5,  profiles.occupation),
-           employer         = COALESCE($6,  profiles.employer),
-           physical_address = COALESCE($7,  profiles.physical_address),
-           date_of_birth    = COALESCE($8,  profiles.date_of_birth),
-           gender           = COALESCE($9,  profiles.gender),
-           nok_name         = COALESCE($10, profiles.nok_name),
-           nok_relationship = COALESCE($11, profiles.nok_relationship),
-           nok_phone        = COALESCE($12, profiles.nok_phone),
-           nok_id_number    = COALESCE($13, profiles.nok_id_number),
-           updated_at       = NOW()`,
+           phone             = COALESCE($3,  profiles.phone),
+           id_number         = COALESCE($4,  profiles.id_number),
+           occupation        = COALESCE($5,  profiles.occupation),
+           employer          = COALESCE($6,  profiles.employer),
+           physical_address  = COALESCE($7,  profiles.physical_address),
+           date_of_birth     = COALESCE($8,  profiles.date_of_birth),
+           gender            = COALESCE($9,  profiles.gender),
+           nok_name          = COALESCE($10, profiles.nok_name),
+           nok_relationship  = COALESCE($11, profiles.nok_relationship),
+           nok_phone         = COALESCE($12, profiles.nok_phone),
+           nok_id_number     = COALESCE($13, profiles.nok_id_number),
+           nok2_name         = COALESCE($14, profiles.nok2_name),
+           nok2_relationship = COALESCE($15, profiles.nok2_relationship),
+           nok2_phone        = COALESCE($16, profiles.nok2_phone),
+           nok2_id_number    = COALESCE($17, profiles.nok2_id_number),
+           contribution_pct  = COALESCE($18, profiles.contribution_pct),
+           updated_at        = NOW()`,
         [
           uuidv4(), req.params.id,
           phone, id_number, occupation, employer, physical_address,
           date_of_birth, gender,
           nok_name, nok_relationship, nok_phone, nok_id_number,
+          nok2_name, nok2_relationship, nok2_phone, nok2_id_number,
+          contribution_pct !== undefined ? parseFloat(contribution_pct) : null,
         ]
       );
 
@@ -332,7 +366,8 @@ exports.updateMember = async (req, res, next) => {
 
     const { rows: [updated] } = await query(
       `SELECT u.id, u.member_no, u.full_name, u.email, u.role, u.status,
-              p.phone, p.kyc_status
+              p.phone, p.kyc_status, p.contribution_pct,
+              p.nok_name, p.nok2_name
        FROM users u LEFT JOIN profiles p ON p.user_id = u.id
        WHERE u.id = $1`,
       [req.params.id]
@@ -342,20 +377,13 @@ exports.updateMember = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/**
- * PATCH /api/members/:id/kyc
- *
- * FIX #2: Validate kyc_status against the ENUM allowlist before writing.
- * Without this, any string (e.g. "hacked", "admin") could be persisted,
- * either crashing the DB (if ENUM enforced at DB level) or storing junk.
- */
+// ─── updateKyc ────────────────────────────────────────────────────────────
 const VALID_KYC_STATUSES = new Set(['pending', 'verified', 'rejected']);
 
 exports.updateKyc = async (req, res, next) => {
   try {
     const { kyc_status } = req.body;
 
-    // FIX #2
     if (!VALID_KYC_STATUSES.has(kyc_status)) {
       return res.status(400).json({
         success: false,
@@ -391,9 +419,7 @@ exports.updateKyc = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/**
- * GET /api/members/:id/statement
- */
+// ─── getStatement ─────────────────────────────────────────────────────────
 exports.getStatement = async (req, res, next) => {
   try {
     const targetId = req.params.id === 'me' ? req.user.id : req.params.id;

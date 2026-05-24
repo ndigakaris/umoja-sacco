@@ -1,6 +1,8 @@
 /**
  * UmojaSACCO — Express Server Entry Point
  * Bootstraps middleware, routes, and DB connection
+ *
+ * NEW (002): registers /api/projects and /api/imports routes
  */
 
 require('dotenv').config();
@@ -29,21 +31,21 @@ const reportRoutes       = require('./src/routes/reports');
 const auditRoutes        = require('./src/routes/audit');
 const dashboardRoutes    = require('./src/routes/dashboard');
 const notificationRoutes = require('./src/routes/notifications');
+// NEW
+const projectRoutes      = require('./src/routes/projects');
+const importRoutes       = require('./src/routes/imports');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 // ─── Security Middleware ───────────────────────────────────────────────────
 app.use(helmet());
-// Support comma-separated list of allowed origins (e.g. "https://umoja.vercel.app,http://localhost:3000")
 const rawOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000').split(',').map(o => o.trim());
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (curl, Postman, Render health checks)
     if (!origin) return callback(null, true);
     const allowed = rawOrigins.some(o =>
       o === origin ||
-      // Allow all Vercel preview deployments for the same project
       (o.includes('vercel.app') && origin.endsWith('.vercel.app'))
     );
     if (allowed) return callback(null, true);
@@ -54,32 +56,38 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// ─── Global Rate Limiter ───────────────────────────────────────────────────
+// ─── Rate Limiters ─────────────────────────────────────────────────────────
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
-  max: parseInt(process.env.RATE_LIMIT_MAX) || 100,
+  max: parseInt(process.env.RATE_LIMIT_MAX) || 200, // increased for import heavy usage
   message: { success: false, message: 'Too many requests, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
 app.use('/api/', limiter);
 
-// Stricter limiter for auth endpoints
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 min
+  windowMs: 15 * 60 * 1000,
   max: 10,
   message: { success: false, message: 'Too many login attempts. Please try again in 15 minutes.' },
 });
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
 
+// Higher limit for bulk imports
+const importLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 50,
+  message: { success: false, message: 'Too many import requests. Please wait before importing again.' },
+});
+app.use('/api/imports', importLimiter);
+
 // ─── General Middleware ────────────────────────────────────────────────────
 app.use(compression());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '20mb' })); // increased for large CSV imports
+app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 app.use(morgan('combined', { stream: { write: msg => logger.info(msg.trim()) } }));
 
-// Serve uploaded files (profile photos etc.)
 app.use('/uploads', express.static('uploads'));
 
 // ─── Health Check ─────────────────────────────────────────────────────────
@@ -101,6 +109,9 @@ app.use('/api/settings',      settingsRoutes);
 app.use('/api/reports',       reportRoutes);
 app.use('/api/audit',         auditRoutes);
 app.use('/api/notifications', notificationRoutes);
+// NEW routes
+app.use('/api/projects',      projectRoutes);
+app.use('/api/imports',       importRoutes);
 
 // ─── 404 Handler ──────────────────────────────────────────────────────────
 app.use((req, res) => {
@@ -115,7 +126,6 @@ async function startServer() {
   try {
     await connectDB();
     logger.info('✅ Database connected');
-
     app.listen(PORT, () => {
       logger.info(`🚀 UmojaSACCO API running on port ${PORT} [${process.env.NODE_ENV}]`);
     });
@@ -127,4 +137,4 @@ async function startServer() {
 
 startServer();
 
-module.exports = app; // For testing
+module.exports = app;

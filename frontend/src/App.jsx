@@ -1,16 +1,14 @@
 /**
- * App.js — Root component with routing
- * Protected routes check auth context before rendering
+ * App.jsx — Root component with routing
+ * Updated (002): Added /project-shares and /import routes
  */
 
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
-// Layouts
 import AppLayout from './components/layout/AppLayout';
 
-// Pages
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import DashboardPage from './pages/DashboardPage';
@@ -26,10 +24,10 @@ import AuditPage from './pages/AuditPage';
 import SettingsPage from './pages/SettingsPage';
 import NotificationsPage from './pages/NotificationsPage';
 import NotFoundPage from './pages/NotFoundPage';
+// NEW
+import ProjectSharesPage from './pages/ProjectSharesPage';
+import ImportPage from './pages/ImportPage';
 
-/**
- * Protect routes — redirect to /login if not authenticated
- */
 function ProtectedRoute({ children, roles }) {
   const { user, loading } = useAuth();
 
@@ -45,40 +43,53 @@ function ProtectedRoute({ children, roles }) {
   }
 
   if (!user) return <Navigate to="/login" replace />;
-
-  if (roles && !roles.includes(user.role)) {
-    return <Navigate to="/dashboard" replace />;
-  }
-
+  if (roles && !roles.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return children;
 }
 
 function AppRoutes() {
   return (
     <Routes>
-      {/* Public routes */}
-      <Route path="/login" element={<LoginPage />} />
+      <Route path="/login"    element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
 
-      {/* Protected routes inside layout */}
       <Route path="/" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
+
         <Route path="members" element={
           <ProtectedRoute roles={['admin', 'treasurer', 'auditor']}>
             <MembersPage />
           </ProtectedRoute>
         } />
         <Route path="members/:id" element={<MemberProfilePage />} />
+
         <Route path="loans" element={<LoansPage />} />
+
         <Route path="savings" element={
           <ProtectedRoute roles={['admin', 'treasurer', 'auditor']}>
             <SavingsPage />
           </ProtectedRoute>
         } />
-        <Route path="welfare" element={<WelfarePage />} />
-        <Route path="penalties" element={<PenaltiesPage />} />
+
+        <Route path="welfare"      element={<WelfarePage />} />
+        <Route path="penalties"    element={<PenaltiesPage />} />
         <Route path="transactions" element={<TransactionsPage />} />
+
+        {/* NEW: Project Shares */}
+        <Route path="project-shares" element={
+          <ProtectedRoute roles={['admin', 'treasurer', 'auditor']}>
+            <ProjectSharesPage />
+          </ProtectedRoute>
+        } />
+
+        {/* NEW: Bulk Import */}
+        <Route path="import" element={
+          <ProtectedRoute roles={['admin', 'treasurer']}>
+            <ImportPage />
+          </ProtectedRoute>
+        } />
+
         <Route path="reports" element={
           <ProtectedRoute roles={['admin', 'treasurer', 'auditor']}>
             <ReportsPage />
